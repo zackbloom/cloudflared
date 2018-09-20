@@ -69,6 +69,12 @@ func (s *MuxedStream) Read(p []byte) (n int, err error) {
 	return s.readBuffer.Read(p)
 }
 
+func (s *MuxedStream) WriteReady() bool {
+	// To provide back pressure we ask clients not to write when
+	// we are already buffering a substantial amount in memory.
+	return s.writeBuffer.Len() < 1024*1024
+}
+
 func (s *MuxedStream) Write(p []byte) (n int, err error) {
 	ok := assignDictToStream(s, p)
 	if !ok {
@@ -250,6 +256,7 @@ func (s *MuxedStream) getChunk() *streamChunk {
 	}
 
 	// Copies at most s.sendWindow bytes
+
 	writeLen, _ := io.CopyN(&chunk.buffer, s.writeBuffer, int64(s.sendWindow))
 	s.sendWindow -= uint32(writeLen)
 	s.receiveWindow += s.windowUpdate

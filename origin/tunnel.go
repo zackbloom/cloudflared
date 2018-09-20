@@ -553,18 +553,46 @@ func (h *TunnelHandler) ServeStream(stream *h2mux.MuxedStream) error {
 		if err != nil {
 			h.logError(stream, err)
 		} else {
+			var err error
+
 			defer response.Body.Close()
 			stream.WriteHeaders(H1ResponseToH2Response(response))
 			if h.isEventStream(response) {
 				h.writeEventStream(stream, response.Body)
 			} else {
-				// Use CopyBuffer, because Copy only allocates a 32KiB buffer, and cross-stream
-				// compression generates dictionary on first write
-				io.CopyBuffer(stream, response.Body, make([]byte, 512*1024))
+				buf := make([]byte, 512*1024)
+
+				for {
+					// Provide back pressure to prevent us reading more into
+					// memory than we can use yet.
+					if !stream.WriteReady() {
+						time.Sleep(1 * time.Millisecond)
+						continue
+					}
+
+					amountRead, errR := response.Body.Read(buf)
+					if amountRead > 0 {
+						_, errW := stream.Write(buf[0:amountRead])
+						if errW != nil {
+							err = errW
+							break
+						}
+					}
+					if errR != nil {
+						if errR != io.EOF {
+							err = errR
+						}
+						break
+					}
+				}
 			}
 
-			h.metrics.incrementResponses(h.connectionID, "200")
-			h.logResponse(response, cfRay, lbProbe)
+			if err != nil {
+				h.logError(stream, err)
+			} else {
+				h.metrics.incrementResponses(h.connectionID, "200")
+				h.logResponse(response, cfRay, lbProbe)
+			}
 		}
 	}
 	h.metrics.decrementConcurrentRequests(h.connectionID)
